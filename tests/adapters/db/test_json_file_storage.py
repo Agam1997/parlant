@@ -154,6 +154,31 @@ async def test_session_creation(
     }
 
 
+async def test_sessions_retrieval(context: _TestContext, new_file: Path) -> None:
+    async with JSONFileDocumentDatabase(context.container[Logger], new_file) as session_db:
+        async with SessionDocumentStore(session_db) as session_store:
+            sessions = []
+            for i in range(10):
+                customer_id = CustomerId(f"test_customer_{i}")
+                title = f"test_title_{i}"
+                utc_now = datetime.now(timezone.utc)
+                session = await session_store.create_session(
+                    creation_utc=utc_now,
+                    customer_id=customer_id,
+                    agent_id=context.agent_id,
+                    title=title,
+                )
+                sessions.append(session)
+            loaded_sessions = await session_store.list_sessions(agent_id=context.agent_id)
+        loaded_sessions = list(loaded_sessions)
+
+    assert len(loaded_sessions) == len(sessions)
+    loaded_session = loaded_sessions[0]
+    assert loaded_session.title == sessions[0].title
+    assert loaded_session.customer_id == sessions[0].customer_id
+    assert loaded_session.agent_id == context.agent_id
+
+
 async def test_event_creation(
     context: _TestContext,
     new_file: Path,

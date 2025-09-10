@@ -304,6 +304,154 @@ async def test_that_sessions_can_be_listed_by_customer_id(
     assert data[0]["customer_id"] == "Joe"
 
 
+async def test_that_sessions_are_paginated_when_listed(
+    async_client: httpx.AsyncClient, container: Container
+) -> None:
+    agents = [
+        await create_agent(container, "first-agent"),
+    ]
+
+    # 10 sessions
+    sessions = []
+    for i in range(10):
+        session = await create_session(container, agent_id=agents[0].id, title=f"session-{i}")
+        sessions.append(session)
+
+    response = await async_client.get("/sessions", params={"limit": 5})
+    data = response.raise_for_status().json()
+
+    assert "sessions" in data
+    assert "next_cursor" in data
+    assert "total_count" in data
+    assert "has_more" in data
+    assert len(data["sessions"]) == 5
+    assert data["total_count"] == 10
+    assert data["has_more"] is True
+
+
+async def test_sessions_pagination_with_cursor(
+    async_client: httpx.AsyncClient,
+    container: Container,
+) -> None:
+    """Test cursor-based pagination navigation."""
+    agent = await create_agent(container, "test-agent")
+
+    # 7 sessions
+    for i in range(7):
+        await create_session(container, agent_id=agent.id, title=f"session-{i}")
+
+    response1 = await async_client.get("/sessions", params={"limit": 3})
+    data1 = response1.raise_for_status().json()
+
+    assert len(data1["sessions"]) == 3
+    assert data1["has_more"] is True
+    assert data1["next_cursor"] is not None
+
+    response2 = await async_client.get(
+        "/sessions", params={"cursor": data1["next_cursor"], "limit": 3}
+    )
+    data2 = response2.raise_for_status().json()
+
+    assert len(data2["sessions"]) == 3
+    assert data2["has_more"] is True
+
+    response3 = await async_client.get(
+        "/sessions", params={"cursor": data2["next_cursor"], "limit": 3}
+    )
+    data3 = response3.raise_for_status().json()
+
+    assert len(data3["sessions"]) == 1
+    assert data3["has_more"] is False
+    assert data3["next_cursor"] is None
+
+    # Check if any overlap
+    page1_ids = {s["id"] for s in data1["sessions"]}
+    page2_ids = {s["id"] for s in data2["sessions"]}
+    page3_ids = {s["id"] for s in data3["sessions"]}
+
+    assert page1_ids.isdisjoint(page2_ids)
+    assert page1_ids.isdisjoint(page3_ids)
+    assert page2_ids.isdisjoint(page3_ids)
+
+
+async def test_sessions_pagination_sort_directions(
+    async_client: httpx.AsyncClient,
+    container: Container,
+) -> None:
+    """Test ascending vs descending sort."""
+    agent = await create_agent(container, "test-agent")
+
+    sessions = []
+    for i in range(7):
+        session = await create_session(container, agent_id=agent.id, title=f"session-{i}")
+        sessions.append(session)
+        await asyncio.sleep(0.015)  # Small delay so entries have different creation_utc
+
+    response_desc = await async_client.get("/sessions", params={"limit": 7, "sort": "desc"})
+    data_desc = response_desc.raise_for_status().json()
+
+    response_asc = await async_client.get("/sessions", params={"limit": 7, "sort": "asc"})
+    data_asc = response_asc.raise_for_status().json()
+
+    assert len(data_desc["sessions"]) == len(data_asc["sessions"])
+    assert data_desc["sessions"][0]["id"] == data_asc["sessions"][-1]["id"]
+    assert data_desc["sessions"][-1]["id"] == data_asc["sessions"][0]["id"]
+
+
+async def test_sessions_pagination_with_filters(
+    async_client: httpx.AsyncClient,
+    container: Container,
+) -> None:
+    """Test pagination combined with existing filters."""
+    agents = [
+        await create_agent(container, "agent-1"),
+        await create_agent(container, "agent-2"),
+    ]
+
+    # Create sessions with different agents
+    for i in range(3):
+        await create_session(container, agent_id=agents[0].id, title=f"agent1-session-{i}")
+    for i in range(2):
+        await create_session(container, agent_id=agents[1].id, title=f"agent2-session-{i}")
+
+    response = await async_client.get("/sessions", params={"agent_id": agents[0].id, "limit": 2})
+    data = response.raise_for_status().json()
+
+    assert len(data["sessions"]) == 2
+    assert data["total_count"] == 3
+    assert data["has_more"] is True
+    assert all(s["agent_id"] == agents[0].id for s in data["sessions"])
+
+
+async def test_sessions_pagination_empty_results(
+    async_client: httpx.AsyncClient,
+    container: Container,
+) -> None:
+    """Test pagination with no sessions."""
+    response = await async_client.get("/sessions", params={"limit": 10})
+    data = response.raise_for_status().json()
+
+    assert data["sessions"] == []
+    assert data["total_count"] == 0
+    assert data["has_more"] is False
+    assert data["next_cursor"] is None
+
+
+async def test_sessions_pagination_invalid_cursor(
+    async_client: httpx.AsyncClient,
+    container: Container,
+) -> None:
+    """Test pagination with invalid cursor."""
+    agent = await create_agent(container, "test-agent")
+    await create_session(container, agent_id=agent.id)
+
+    response = await async_client.get("/sessions", params={"cursor": "invalid-cursor", "limit": 10})
+    data = response.raise_for_status().json()
+
+    assert len(data["sessions"]) == 1
+    assert data["total_count"] == 1
+
+
 async def test_that_a_session_is_created_with_zeroed_out_consumption_offsets(
     async_client: httpx.AsyncClient,
     long_session_id: SessionId,
